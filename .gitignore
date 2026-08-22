@@ -1,0 +1,13 @@
+# Build artifacts
+*.iso
+*.iso.sha256
+work/
+isoroot/
+apkovl/
+*.apkovl.tar.gz
+
+# Local dev
+.vscode/
+.idea/
+*.swp
+.DS_Store
