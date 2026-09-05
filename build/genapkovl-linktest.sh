@@ -27,6 +27,31 @@
 #   - etc/runlevels/default/local, enabling the `local` OpenRC service so
 #     etc/local.d/*.start actually runs at boot -- easy to forget, and the
 #     ISO would build fine and boot to nothing if it were missing
+#   - etc/apk/world, listing every package this profile needs. Found by
+#     actually booting the first real ISO in QEMU: mkimg.linktest.sh's
+#     apks= only bundles packages into the ISO's own local repo -- it does
+#     NOT install them onto the live system. mkinitfs's initramfs-init
+#     installs onto the booted root separately, from whatever's listed in
+#     THIS file (plus alpine-base/openssl, which get seeded automatically
+#     regardless). Without it, /bin/bash -- and every other package this
+#     profile added -- silently doesn't exist on the booted system, and
+#     every bash-shebanged script (including linktest-menu on tty1) fails
+#     with a "No such file or directory" that looks exactly like a missing
+#     *script*, not a missing *interpreter*. Keep this in sync with
+#     mkimg.linktest.sh's apks= list by hand -- they're read by different
+#     processes (this one via fakeroot, that one sourced into mkimage.sh)
+#     and there's no shared variable to derive one from the other.
+#   - etc/.default_boot_services, an empty marker mkinitfs's initramfs-init
+#     recognizes: with a custom apkovl present it otherwise skips its own
+#     sensible rc_add defaults (devfs/mdev/hwdrivers/modloop at sysinit,
+#     hwclock/modules/sysctl/hostname/bootmisc/syslog at boot, and orderly
+#     shutdown), since it assumes a custom apkovl wants to wire all of that
+#     itself. We don't -- this marker asks for Alpine's own defaults on top
+#     of what we add ourselves (just `local`).
+#   - etc/hostname, since mkimg.linktest.sh's hostname="linktest" only
+#     names the generated apkovl file/is passed as $1 here -- it doesn't
+#     write /etc/hostname by itself, so the booted system showed
+#     "localhost" until this was added.
 #
 # $OVERLAY_DIR and $SRC_DIR must be set in the environment, pointing at the
 # repo's overlay/ and src/ directories (build/build.sh sets both before
@@ -61,6 +86,25 @@ rc_add() {
 	ln -sf /etc/init.d/"$1" "$tmp"/etc/runlevels/"$2"/"$1"
 }
 rc_add local default
+
+# Must match mkimg.linktest.sh's apks= list (see the header comment above
+# for why this can't just be read from there instead).
+mkdir -p "$tmp"/etc/apk
+cat > "$tmp"/etc/apk/world <<-EOF
+	alpine-base
+	openssl
+	bash
+	dialog
+	ethtool
+	iperf3
+	iproute2
+	iputils-arping
+	socat
+EOF
+
+touch "$tmp"/etc/.default_boot_services
+
+echo "$HOSTNAME" > "$tmp"/etc/hostname
 
 # Fail the build loudly here rather than ship an apkovl that boots to
 # nothing because a script lost its executable bit somewhere along the way.
