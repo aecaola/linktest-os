@@ -10,7 +10,10 @@ cable is fine" isn't good enough.
 
 ## Status
 
-Early development. Not yet bootable. See [ROADMAP](#roadmap) below.
+Working end-to-end as of v0.1.0: the ISO builds, boots straight to the menu with no
+login prompt, two machines find each other over a real Ethernet cable, and a throughput
+test completes successfully. Still early — hardware coverage and edge cases are thin,
+see `docs/COMPATIBILITY.md` for what's actually been tested.
 
 ## Why
 
@@ -21,7 +24,7 @@ Early development. Not yet bootable. See [ROADMAP](#roadmap) below.
   OS or disk.
 - Symmetric: both machines boot the identical ISO. No "build A" vs "build B."
 
-## Quickstart (once builds are published)
+## Quickstart
 
 1. Flash the latest ISO from [Releases](../../releases) to two USB sticks (`dd` or Rufus/balenaEtcher).
 2. Boot both laptops from USB.
