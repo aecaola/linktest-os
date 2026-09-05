@@ -1,5 +1,12 @@
-::sysinit:/sbin/rc sysinit
-::wait:/sbin/rc default
+# /sbin/rc doesn't exist on this Alpine 3.20 image -- only /sbin/openrc
+# (invoked directly, no wrapper). Found by booting in QEMU: the stock
+# inittab example fetched from alpine-baselayout's master branch used
+# "/sbin/rc sysinit"/"default", which silently did nothing (busybox init
+# still processed the rest of the file fine, including tty1's respawn
+# entry below, so the menu still launched -- but openrc itself was never
+# actually invoked, so nothing in a runlevel, including `local`, ever ran).
+::sysinit:/sbin/openrc sysinit
+::wait:/sbin/openrc default
 
 # tty1 is the operator console: linktest-menu runs here directly, respawned
 # by init on any exit (including "Quit", which execs a shell instead of
@@ -20,4 +27,4 @@ tty6::respawn:/sbin/getty 38400 tty6
 ::ctrlaltdel:/sbin/reboot
 
 # Stuff to do before rebooting
-::shutdown:/sbin/rc shutdown
+::shutdown:/sbin/openrc shutdown

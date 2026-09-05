@@ -12,8 +12,14 @@ PIDFILE=/run/linktest/ipv4ll.pid
 
 mkdir -p /run/linktest
 
-# Idempotent: do nothing if it's already up.
-if start-stop-daemon --status --pidfile "$PIDFILE" 2>/dev/null; then
+# Idempotent: do nothing if it's already up. Checked directly with kill -0
+# rather than `start-stop-daemon --status`: OpenRC's start-stop-daemon (the
+# one actually on this image -- confirmed by booting in QEMU) doesn't
+# support --status as a standalone query the way Debian's does; it printed
+# its own usage/help and returned non-zero unconditionally, meaning this
+# would never detect an already-running daemon and would launch a second
+# copy on every re-run.
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
 	exit 0
 fi
 

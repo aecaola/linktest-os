@@ -17,9 +17,9 @@
 # /etc/inittab's `respawn` mechanism instead of local.d -- a local.d script
 # that blocks in the foreground (which the menu does, until "Quit") would
 # hang OpenRC's `local` service forever, which blocks busybox init's
-# `::wait:/sbin/rc default` in /etc/inittab, which in turn blocks *every*
-# `respawn` getty entry below it from ever being set up -- not just tty1.
-# See overlay/etc/inittab.
+# `::wait:/sbin/openrc default` in /etc/inittab, which in turn blocks
+# *every* `respawn` getty entry below it from ever being set up -- not
+# just tty1. See overlay/etc/inittab.
 set -e
 
 IFACE="${LINKTEST_IFACE:-eth0}"
@@ -27,8 +27,9 @@ PIDFILE=/run/linktest/statemachine.pid
 
 mkdir -p /run/linktest
 
-# Idempotent: do nothing if it's already up.
-if start-stop-daemon --status --pidfile "$PIDFILE" 2>/dev/null; then
+# Idempotent: do nothing if it's already up. See 20-ipv4ll.start's comment
+# on why this is a plain kill -0 rather than `start-stop-daemon --status`.
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
 	exit 0
 fi
 
