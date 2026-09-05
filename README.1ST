@@ -4,15 +4,15 @@ Instructions for downloading, flashing, and booting linktest-os on two
 laptops, written for someone who hasn't done this before. Uses a Windows 11
 PC to do the downloading and USB-flashing.
 
-BEFORE YOU START: PROJECT STATUS
----------------------------------
-This project is still in active development (see the main README.md,
-"Status" section). As of this writing there may not be a finished ISO
-published yet on the GitHub Releases page. If you don't see one when you
-get to Step 2 below, stop and check with whoever gave you this drive/laptop
-setup, or ask in the project's GitHub Discussions — don't assume it's
-your fault. The rest of this guide will apply exactly as written the
-moment a release is published.
+BEFORE YOU START
+-----------------
+As of release v0.1.0, this has been tested end-to-end: it builds, boots
+straight to the menu below with no login prompt, two machines find each
+other over a real cable, and a throughput test completes successfully.
+The project is still early (see the main README.md "Status" section),
+so rough edges are possible — if something in this guide doesn't match
+what you see, that's useful to know, not necessarily your mistake. Report
+it via Issues or Discussions on the GitHub repo (link at the bottom).
 
 WHAT YOU'LL NEED
 -----------------
