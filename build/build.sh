@@ -10,10 +10,13 @@ OUT_DIR="${REPO_ROOT}/out"
 
 mkdir -p "${OUT_DIR}"
 
-# Fetch Alpine's mkimage tooling if not already vendored.
+# Fetch Alpine's mkimage tooling if not already vendored. Uses the GitHub
+# mirror, not gitlab.alpinelinux.org directly -- Alpine's GitLab returns
+# HTTP 418 to GitHub Actions' runner IP ranges (a known block against CI
+# traffic), which broke this on the very first tag-triggered CI run.
 if [ ! -d "${REPO_ROOT}/build/aports" ]; then
   git clone --depth 1 -b "${ALPINE_VERSION}-stable" \
-    https://gitlab.alpinelinux.org/alpine/aports.git \
+    https://github.com/alpinelinux/aports.git \
     "${REPO_ROOT}/build/aports"
 fi
 
