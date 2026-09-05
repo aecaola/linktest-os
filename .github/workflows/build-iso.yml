@@ -23,8 +23,11 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # mtools + grub-efi: mkimage.sh's own header comment documents these
+          # as required "(for efi:)" -- missing them fails late, at
+          # "grub-mkimage: not found", found by actually running the build.
           apk add --no-cache alpine-sdk alpine-conf syslinux xorriso squashfs-tools \
-            docker git bash
+            grub-efi mtools docker git bash
 
       - name: Build ISO
         run: |

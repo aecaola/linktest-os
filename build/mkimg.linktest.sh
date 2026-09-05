@@ -9,6 +9,10 @@
 
 profile_linktest() {
 	profile_standard
+	# profile_standard/profile_base never set one, so it silently defaults
+	# to "alpine" -- found by actually running the build. hostname also
+	# gates mkimg.base.sh's section_apkovl (it no-ops without one).
+	hostname="linktest"
 	title="linktest-os"
 	desc="Minimal live Ethernet link tester (see github.com/<you>/linktest-os)"
 	image_ext="iso"

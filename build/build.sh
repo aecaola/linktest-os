@@ -57,13 +57,26 @@ cp "${REPO_ROOT}/build/mkimg.linktest.sh" "${REPO_ROOT}/build/aports/scripts/mki
 cp "${REPO_ROOT}/build/genapkovl-linktest.sh" "${REPO_ROOT}/build/aports/scripts/genapkovl-linktest.sh"
 chmod +x "${REPO_ROOT}/build/aports/scripts/genapkovl-linktest.sh"
 
-sh "${REPO_ROOT}/build/aports/scripts/mkimage.sh" \
-  --tag "linktest-os" \
-  --outdir "${OUT_DIR}" \
-  --arch x86_64 \
-  --repository "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main" \
-  --repository "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" \
-  --profile linktest
+# mkimg.base.sh's section_apkovl() reads the apkovl script via a bare
+# relative redirect (`checksum < "$apkovl"`, i.e. `< "genapkovl-linktest.sh"`
+# with no directory) rather than the resolved path build_apkovl() itself
+# uses -- it only opens correctly if the shell's cwd is already
+# build/aports/scripts/ when mkimage.sh runs, which is Alpine's own assumed
+# invocation convention (cd into scripts/, then ./mkimage.sh). Found by
+# actually running this build: skipping this cd doesn't stop the build (the
+# error is non-fatal, and build_apkovl()'s own path search still finds and
+# runs our script fine), but it does leave section_apkovl's build-cache key
+# empty/unstable, so cd there properly instead.
+(
+  cd "${REPO_ROOT}/build/aports/scripts"
+  sh ./mkimage.sh \
+    --tag "linktest-os" \
+    --outdir "${OUT_DIR}" \
+    --arch x86_64 \
+    --repository "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main" \
+    --repository "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" \
+    --profile linktest
+)
 
 mv "${OUT_DIR}"/alpine-linktest-*.iso "${OUT_DIR}/linktest-os.iso" 2>/dev/null || true
 
