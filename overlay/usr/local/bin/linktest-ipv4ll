@@ -1,0 +1,197 @@
+#!/bin/sh
+# linktest-os :: IPv4LL (RFC 3927) address manager
+#
+# Self-assigns a 169.254.x.x/16 link-local address on the test interface and
+# holds it across cable unplug/replug, using ARP duplicate-address detection.
+# Alpine ships no avahi-autoipd, so this is the "minimal equivalent" the
+# design doc calls for (docs/DESIGN.md "Addressing: IPv4LL (RFC 3927)").
+#
+# It runs as a long-lived daemon, started from /etc/local.d/20-ipv4ll.start.
+# The state-machine daemon does NOT invoke it -- it only polls for a
+# 169.254.x.x address to appear on the interface (src/statemachine.sh,
+# wait_for_ipv4ll). Keeping the address owner separate from the state machine
+# means one code path handles replug instead of every menu screen.
+#
+# RFC 3927 conformance notes:
+#   * Probing (2.2)      : `arping -D` sends ARP probes from 0.0.0.0; a reply
+#                          from a different host means the address is taken.
+#   * Announcing (2.4)   : `arping -U` sends the 2 gratuitous ARP requests.
+#   * Address selection  : pseudo-random in 169.254.1.0-169.254.254.255,
+#     (2.1)                seeded from the MAC so a host reclaims the same
+#                          address across reboots when there's no conflict.
+#   * Rate limiting (2.2): after MAX_CONFLICTS collisions, back off for
+#                          RATE_LIMIT_INTERVAL before trying again.
+#   * Ongoing defense    : NOT implemented as continuous passive ARP
+#     (2.5)                monitoring (needs a raw-socket listener this image
+#                          doesn't carry). Instead the address is dropped and
+#                          re-probed on every carrier-return, which covers the
+#                          realistic case for a 2-host point-to-point link
+#                          (peer reconfigured while the cable was out).
+#   * Probe/announce spacing follows `arping`'s ~1s cadence rather than the
+#     exact PROBE_MIN/PROBE_MAX/ANNOUNCE_INTERVAL timers. Close enough here.
+#
+# Usage: linktest-ipv4ll [IFACE]     (default: $LINKTEST_IFACE, then eth0)
+
+set -u
+
+IFACE="${1:-${LINKTEST_IFACE:-eth0}}"
+
+STATE_DIR=/run/linktest
+LOG_FILE="$STATE_DIR/ipv4ll.log"
+ADDR_FILE="$STATE_DIR/ipv4ll.addr"
+
+# RFC 3927 parameters, overridable for testing.
+PROBE_WAIT="${LINKTEST_IPV4LL_PROBE_WAIT:-1}"
+PROBE_NUM="${LINKTEST_IPV4LL_PROBE_NUM:-3}"
+ANNOUNCE_NUM="${LINKTEST_IPV4LL_ANNOUNCE_NUM:-2}"
+ANNOUNCE_INTERVAL="${LINKTEST_IPV4LL_ANNOUNCE_INTERVAL:-2}"
+MAX_CONFLICTS="${LINKTEST_IPV4LL_MAX_CONFLICTS:-10}"
+RATE_LIMIT_INTERVAL="${LINKTEST_IPV4LL_RATE_LIMIT:-60}"
+POLL_INTERVAL="${LINKTEST_IPV4LL_POLL:-3}"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+	echo "$(date -Iseconds 2>/dev/null || date) ipv4ll[$IFACE]: $*" >> "$LOG_FILE"
+}
+
+have_carrier() {
+	# "1" => physical link present. Reads back EINVAL (=> not "1") while the
+	# interface is administratively down.
+	[ "$(cat "/sys/class/net/$IFACE/carrier" 2>/dev/null || echo 0)" = "1" ]
+}
+
+# Echo our current link-local address on $IFACE (empty if none). Always
+# exits 0: under `pipefail`, a pipeline's status is the last *non-zero*
+# stage, not simply the last command's -- `grep` finding no match makes this
+# "fail" even though `head` exits 0, and `routable="$(current_routable_addr)"`
+# elsewhere is a bare assignment, which `set -e` treats as a failed command
+# if left unguarded. (The twin of this bug in src/statemachine.sh's
+# current_ll_addr killed that daemon silently on every normal boot, before
+# an address was ever assigned -- fixed here too.)
+current_ll_addr() {
+	ip -4 -o addr show dev "$IFACE" scope link 2>/dev/null \
+		| grep -oE '169\.254\.[0-9]{1,3}\.[0-9]{1,3}' | head -n1 \
+		|| true
+}
+
+# Echo any routable (global-scope) IPv4 on $IFACE (empty if none). See
+# current_ll_addr just above for why this must not propagate grep's exit
+# status under pipefail.
+current_routable_addr() {
+	ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null \
+		| grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 \
+		|| true
+}
+
+rand_byte() { od -An -tu1 -N1 /dev/urandom | tr -dc '0-9'; }
+
+# Decimal seed derived from the low 16 bits of the MAC. Always valid: the
+# input is filtered to hex and defaults to "0".
+seed_from_mac() {
+	m="$(cat "/sys/class/net/$IFACE/address" 2>/dev/null | tr -dc '0-9a-fA-F' | tail -c 4)"
+	[ -n "$m" ] || m=0
+	printf '%d\n' "$(( 0x$m ))"
+}
+
+# $1 = attempt number. Attempt 0 is MAC-seeded (stable across reboots);
+# later attempts are random. Range is 169.254.1.0 - 169.254.254.255
+# (65024 addresses), excluding the reserved first/last /24 per RFC 3927 2.1.
+pick_candidate() {
+	if [ "${1:-0}" -eq 0 ]; then
+		n=$(( $(seed_from_mac) % 65024 ))
+	else
+		n=$(( ( $(rand_byte) * 256 + $(rand_byte) ) % 65024 ))
+	fi
+	echo "169.254.$(( 1 + n / 256 )).$(( n % 256 ))"
+}
+
+# Returns 0 if $1 is free (no other host answers an ARP probe for it).
+probe_free() {
+	arping -q -D -c "$PROBE_NUM" -w "$(( PROBE_NUM + PROBE_WAIT ))" \
+		-I "$IFACE" "$1" >/dev/null 2>&1
+}
+
+announce() {
+	arping -q -U -c "$ANNOUNCE_NUM" -w "$(( ANNOUNCE_NUM * ANNOUNCE_INTERVAL ))" \
+		-I "$IFACE" "$1" >/dev/null 2>&1 || true
+}
+
+assign() {
+	ip addr add "$1/16" brd 169.254.255.255 scope link dev "$IFACE" 2>/dev/null || true
+	ip route add 169.254.0.0/16 dev "$IFACE" scope link src "$1" 2>/dev/null || true
+	echo "$1" > "$ADDR_FILE"
+	log "claimed $1"
+}
+
+unassign() {
+	[ -n "${1:-}" ] || return 0
+	ip addr del "$1/16" dev "$IFACE" 2>/dev/null || true
+	rm -f "$ADDR_FILE"
+}
+
+# Probe candidates until one is free, then announce + assign it. Echoes the
+# address on success; returns non-zero if carrier drops before we get one.
+claim() {
+	attempt=0
+	conflicts=0
+	while have_carrier; do
+		cand="$(pick_candidate "$attempt")"
+		# random 0..PROBE_WAIT initial delay (RFC 3927 2.2.1)
+		sleep "0.$(( $(rand_byte) % 10 ))" 2>/dev/null || sleep 1
+
+		if probe_free "$cand"; then
+			announce "$cand"
+			assign "$cand"
+			echo "$cand"
+			return 0
+		fi
+
+		conflicts=$(( conflicts + 1 ))
+		attempt=$(( attempt + 1 ))
+		log "address $cand in use, trying another (conflict $conflicts)"
+
+		if [ "$conflicts" -ge "$MAX_CONFLICTS" ]; then
+			log "backing off ${RATE_LIMIT_INTERVAL}s after $conflicts conflicts"
+			sleep "$RATE_LIMIT_INTERVAL"
+			conflicts=0
+		fi
+	done
+	return 1
+}
+
+command -v arping >/dev/null 2>&1 || { log "FATAL: arping not found in PATH"; exit 1; }
+
+log "starting on $IFACE (poll ${POLL_INTERVAL}s)"
+ip link set "$IFACE" up 2>/dev/null || true
+
+last_carrier=-1
+while true; do
+	if have_carrier; then carrier=1; else carrier=0; fi
+
+	if [ "$carrier" != "$last_carrier" ]; then
+		if [ "$carrier" = 1 ]; then
+			# RFC 3927 2.5: the network may have changed while we were
+			# disconnected -- drop and re-probe rather than trust the old address.
+			log "carrier up; re-probing"
+			unassign "$(current_ll_addr)"
+		elif [ "$last_carrier" != -1 ]; then
+			log "carrier down; retaining $(current_ll_addr) for fast replug"
+		fi
+		last_carrier="$carrier"
+	fi
+
+	if [ "$carrier" = 1 ]; then
+		routable="$(current_routable_addr)"
+		if [ -n "$routable" ]; then
+			if [ -n "$(current_ll_addr)" ]; then
+				log "interface has routable address $routable; standing down"
+				unassign "$(current_ll_addr)"
+			fi
+		elif [ -z "$(current_ll_addr)" ]; then
+			claim || true
+		fi
+	fi
+
+	sleep "$POLL_INTERVAL"
+done

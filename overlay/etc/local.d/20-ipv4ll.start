@@ -1,0 +1,22 @@
+#!/bin/sh
+# Start the IPv4LL (RFC 3927) address manager for the link-test interface.
+#
+# It's launched in the background because it must keep running to hold and
+# re-claim the 169.254.x.x address across cable unplug/replug -- a plain
+# run-once-at-boot script can't do that, and local.d would block boot waiting
+# for it to exit. Real logic lives in /usr/local/bin/linktest-ipv4ll.
+set -e
+
+IFACE="${LINKTEST_IFACE:-eth0}"
+PIDFILE=/run/linktest/ipv4ll.pid
+
+mkdir -p /run/linktest
+
+# Idempotent: do nothing if it's already up.
+if start-stop-daemon --status --pidfile "$PIDFILE" 2>/dev/null; then
+	exit 0
+fi
+
+start-stop-daemon --start --background \
+	--make-pidfile --pidfile "$PIDFILE" \
+	--exec /usr/local/bin/linktest-ipv4ll -- "$IFACE"

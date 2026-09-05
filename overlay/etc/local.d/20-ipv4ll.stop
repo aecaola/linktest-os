@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stop the IPv4LL address manager. The link-local address it assigned is left
+# in place; the kernel drops it when the interface goes down at shutdown.
+set -e
+
+PIDFILE=/run/linktest/ipv4ll.pid
+
+start-stop-daemon --stop --quiet --pidfile "$PIDFILE" \
+	--retry TERM/5/KILL/5 || true
+rm -f "$PIDFILE"
