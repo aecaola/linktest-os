@@ -1,0 +1,199 @@
+linktest-os — READ ME FIRST
+============================
+Instructions for downloading, flashing, and booting linktest-os on two
+laptops, written for someone who hasn't done this before. Uses a Windows 11
+PC to do the downloading and USB-flashing.
+
+BEFORE YOU START: PROJECT STATUS
+---------------------------------
+This project is still in active development (see the main README.md,
+"Status" section). As of this writing there may not be a finished ISO
+published yet on the GitHub Releases page. If you don't see one when you
+get to Step 2 below, stop and check with whoever gave you this drive/laptop
+setup, or ask in the project's GitHub Discussions — don't assume it's
+your fault. The rest of this guide will apply exactly as written the
+moment a release is published.
+
+WHAT YOU'LL NEED
+-----------------
+  - 2 USB flash drives, 4 GB or bigger (they will be COMPLETELY ERASED)
+  - 2 laptops (or PCs), each with an Ethernet port, or a USB-to-Ethernet
+    adapter if the laptop doesn't have one built in
+  - 1 standard Ethernet cable (any cable works — it does not need to be a
+    special "crossover" cable)
+  - A Windows 11 PC with internet access to do the downloading and
+    flashing (this can be one of the two test laptops, or a third machine)
+
+Nothing gets installed on either laptop's hard drive. linktest-os runs
+entirely from the USB stick and from RAM — when you're done, you remove
+the USB drive and the laptop boots normally again, untouched.
+
+
+STEP 1 — Download a flashing tool: Rufus
+------------------------------------------
+On the Windows 11 PC, go to:
+
+    https://rufus.ie
+
+and download Rufus (the "portable" version needs no installation — just
+save the .exe file somewhere you can find it, like your Downloads folder
+or Desktop).
+
+(If you already prefer another tool like balenaEtcher, that works too —
+just skip to Step 3 and use its equivalent buttons.)
+
+
+STEP 2 — Download the linktest-os ISO
+----------------------------------------
+Go to:
+
+    https://github.com/aecaola/linktest-os/releases
+
+and download the latest linktest-os.iso file (it's the actual "distro"
+you're going to put on the USB drives — a few hundred MB). If a
+.iso.sha256 file is also listed, you can download that too, but it's
+optional — it's just a way to double check the download wasn't corrupted.
+
+There is only ONE iso file — both USB drives get the exact same one.
+There's no "drive A" vs "drive B."
+
+
+STEP 3 — Flash the ISO onto BOTH USB drives
+----------------------------------------------
+Do this whole step twice — once per USB drive.
+
+  1. Plug in a USB drive. WARNING: everything currently on it will be
+     erased. Make sure it's empty or that you don't need anything on it.
+
+  2. Double-click Rufus. If Windows asks "Do you want to allow this app
+     to make changes to your device?", click Yes.
+
+  3. In Rufus, under "Device", make sure the drive shown is the USB
+     stick you just plugged in — not your Windows hard drive. If you
+     have other drives plugged in, double- and triple-check this.
+
+  4. Under "Boot selection", click SELECT (or the small disk icon) and
+     choose the linktest-os.iso file you downloaded in Step 2.
+
+  5. Leave the rest of the settings on their defaults. If Rufus pops up
+     a dialog asking how to write the image (e.g. "ISO Image mode" vs
+     "DD Image mode"), choose "DD Image mode" (sometimes just called
+     "Write in DD mode") if you're given the choice — this writes the
+     ISO exactly as-is, which is what a live/bootable Linux image needs.
+
+  6. Click START. Confirm the "this will erase the drive" warning.
+
+  7. Wait for the progress bar to reach "READY" (usually a couple of
+     minutes). Don't unplug the drive while it's running.
+
+  8. Eject the drive (Windows' "Safely Remove Hardware," or just wait
+     until Rufus says it's done and unplug it).
+
+  9. Repeat steps 1–8 with the second USB drive and the same ISO file.
+
+You now have two identical bootable linktest-os USB drives.
+
+
+STEP 4 — Turn off Secure Boot (one-time, per laptop)
+-------------------------------------------------------
+Most Windows 11 laptops ship with a security feature called "Secure Boot"
+turned on, which blocks USB drives that aren't from Microsoft or a small
+list of approved vendors. linktest-os isn't signed for Secure Boot, so it
+needs to be turned off, or the laptop will refuse to boot from the USB
+drive (it'll just boot into Windows as normal, or show an error).
+
+You only need to do this once per laptop; it won't affect normal Windows
+use afterward.
+
+  1. Click the Windows Start menu, then the gear icon (Settings).
+  2. Go to System > Recovery.
+  3. Next to "Advanced startup", click Restart now.
+  4. The PC restarts into a blue menu. Click Troubleshoot >
+     Advanced options > UEFI Firmware Settings > Restart.
+  5. The PC restarts again into its UEFI/BIOS setup screen (blue or gray,
+     mouse-and-keyboard or keyboard-only, looks different on every brand).
+     Look for a tab or menu called "Security" or "Boot" and find
+     "Secure Boot". Set it to Disabled.
+  6. Find "Save and Exit" (often the F10 key) and confirm.
+
+Do this on BOTH laptops.
+
+
+STEP 5 — Boot both laptops from USB
+---------------------------------------
+Do this on BOTH laptops, one at a time.
+
+  1. Plug a flashed USB drive into the laptop.
+  2. Restart the laptop.
+  3. As it's restarting, you need to open a one-time "boot menu" instead
+     of letting it boot into Windows normally. This is done by tapping a
+     key repeatedly right after the screen goes dark/shows a logo. The
+     key depends on the laptop brand:
+
+         Dell ................ F12
+         Lenovo .............. F12  (some: Novo button / F2)
+         HP .................. F9   (some: Esc, then F9)
+         ASUS ................ F8  or  Esc
+         Acer ................ F12  (may need enabling in BIOS first)
+         MSI ................. F11
+         Surface / generic UEFI ... hold Volume Down while powering on,
+                                      or use Step 4's "Advanced startup"
+                                      route and choose "Use a device"
+                                      instead of "UEFI Firmware Settings"
+
+     If none of those work, use the same "Advanced startup" route as
+     Step 4, but at the blue Troubleshoot menu choose "Use a device"
+     instead of "UEFI Firmware Settings" — this always works regardless
+     of brand.
+
+  4. From the boot menu, select the USB drive. It may be listed by brand
+     name (e.g. "SanDisk USB Device") or as "UEFI: <drive name>" — if
+     both are listed, try the UEFI one first.
+
+  5. The screen will show a lot of scrolling text for a few seconds —
+     that's Linux booting, this is normal, you don't need to read it.
+
+  6. It should land directly on the linktest-os menu screen — no login
+     prompt, nothing to type. If you instead see Windows start up
+     normally, the boot menu selection didn't take; restart and try
+     again, or double-check Step 4 (Secure Boot).
+
+
+STEP 6 — Connect the cable and run a test
+----------------------------------------------
+  1. With both laptops sitting at the linktest-os menu, plug the
+     Ethernet cable into both laptops' Ethernet ports (built-in port, or
+     a USB-Ethernet adapter — see docs/COMPATIBILITY.md in this repo if
+     you're not sure yours is supported).
+  2. Watch the "State" line at the top of the menu on both screens. It
+     will move through a few stages on its own (this takes a few
+     seconds) and should settle on READY, with a "Peer" address filled
+     in on both screens.
+  3. On EITHER laptop (doesn't matter which), select "Run Test" from the
+     menu and pick a duration.
+  4. After it finishes, you'll see a results screen: throughput, plus
+     whether any errors/drops showed up on the link during the test.
+
+When you're done, just power off the laptop (or remove the USB drive and
+restart) — nothing was changed on the laptop itself.
+
+
+IF SOMETHING'S NOT WORKING
+-----------------------------
+  - Stuck at "NO_LINK": check the cable is fully plugged in on both
+    ends, and that you're using the Ethernet port (not a USB port) on
+    both machines.
+  - Stuck at "PEER_DISCOVERY" and never reaches READY: make sure BOTH
+    laptops actually booted into linktest-os (not one of them still
+    running Windows with a manually-configured IP) — the peer-discovery
+    step needs both sides running it.
+  - Using a USB-to-Ethernet dongle and nothing works: check
+    docs/COMPATIBILITY.md — not every USB-C/USB-A Ethernet dongle chipset
+    is supported yet, and that file tracks which ones are known-good.
+  - Testing against a machine that ISN'T running linktest-os: use the
+    menu's Advanced option to force server-only or client-only mode
+    instead of waiting for normal peer discovery, which requires both
+    sides.
+
+To report a bug or ask a question, use Issues or Discussions on the
+GitHub repo: https://github.com/aecaola/linktest-os
