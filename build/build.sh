@@ -17,8 +17,42 @@ if [ ! -d "${REPO_ROOT}/build/aports" ]; then
     "${REPO_ROOT}/build/aports"
 fi
 
-# Profile: package list + overlay wiring. See build/mkimg.linktest.sh
+# mkimage.sh's kernel build step (alpine-conf's /sbin/update-kernel) signs
+# the kernel-modules squashfs (modloop) via its sign_modloop() function,
+# which sources ~/.abuild/abuild.conf and reads $PACKAGER_PRIVKEY -- with
+# no key configured it fails with "Could not open file or uri for loading
+# private key". Found by actually running this build and reading
+# update-kernel's source; not documented anywhere upstream we started from,
+# and easy to get wrong: `abuild-keygen --kernel` looks like the obvious
+# flag for a *kernel* signing key, but it sets $KERNEL_SIGNING_KEY, a
+# different variable that sign_modloop() never reads. Plain `-a` (append)
+# is what actually sets $PACKAGER_PRIVKEY. `-i` (install the pubkey into
+# /etc/apk/keys) is deliberately omitted -- it shells out to doas/sudo to
+# do the copy even when already running as root, and isn't installed in
+# this container; we don't need the pubkey installed anywhere for signing
+# to work, only the private key referenced from abuild.conf.
+#
+# `alpine-sdk` (already a required package for this script) provides
+# abuild-keygen. Skip regenerating if a key is already configured, so
+# re-running this in a persistent local dev VM is a no-op.
+if ! grep -q '^PACKAGER_PRIVKEY=' /root/.abuild/abuild.conf 2>/dev/null; then
+  abuild-keygen -a -n
+fi
+
+# Profile: package list + overlay wiring. See build/mkimg.linktest.sh and
+# build/genapkovl-linktest.sh.
 export OVERLAY_DIR="${REPO_ROOT}/overlay"
+export SRC_DIR="${REPO_ROOT}/src"
+
+# mkimage.sh resolves `--profile linktest` and the genapkovl script it
+# references (apkovl="genapkovl-linktest.sh" in mkimg.linktest.sh) by
+# looking inside its OWN scripts/ directory -- i.e. build/aports/scripts/,
+# not this repo's build/. Neither file lives there on disk; they have to be
+# copied in before every invocation, since build/aports/ is a throwaway
+# clone that isn't part of this repo.
+cp "${REPO_ROOT}/build/mkimg.linktest.sh" "${REPO_ROOT}/build/aports/scripts/mkimg.linktest.sh"
+cp "${REPO_ROOT}/build/genapkovl-linktest.sh" "${REPO_ROOT}/build/aports/scripts/genapkovl-linktest.sh"
+chmod +x "${REPO_ROOT}/build/aports/scripts/genapkovl-linktest.sh"
 
 sh "${REPO_ROOT}/build/aports/scripts/mkimage.sh" \
   --tag "linktest-os" \

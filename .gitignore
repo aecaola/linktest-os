@@ -5,6 +5,8 @@ work/
 isoroot/
 apkovl/
 *.apkovl.tar.gz
+/out/
+/build/aports/
 
 # Local dev
 .vscode/

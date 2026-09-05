@@ -1,9 +1,11 @@
 # Alpine mkimage.sh profile for linktest-os
-# Place/symlink into build/aports/scripts/ as mkimg.linktest.sh during build,
-# or reference via --profile once aports is vendored (see build.sh).
 #
-# This is a skeleton — package list and overlay wiring will grow as the
-# state-machine daemon and menu scripts (src/, overlay/) firm up.
+# mkimage.sh resolves `--profile linktest` by looking for a mkimg.linktest.sh
+# defining profile_linktest() inside its OWN scripts/ directory
+# (build/aports/scripts/, once aports is vendored) -- build.sh copies this
+# file there before every invocation, since build/aports/ is a throwaway
+# clone, not part of this repo. See build/genapkovl-linktest.sh for what
+# apkovl="genapkovl-linktest.sh" below actually bakes into the image.
 
 profile_linktest() {
 	profile_standard
@@ -15,8 +17,11 @@ profile_linktest() {
 	initfs_features="$initfs_features base squashfs usb"
 
 	# Core packages: ethtool for link stats, iperf3 for throughput,
-	# avahi for IPv4LL addressing, dialog for the TUI menu, bash for scripts.
-	apks="$apks ethtool iperf3 avahi dialog bash iproute2"
+	# iputils-arping for RFC 3927 IPv4LL duplicate-address detection
+	# (Alpine has no avahi-autoipd -- see overlay/usr/local/bin/linktest-ipv4ll),
+	# dialog for the TUI menu, bash for scripts, socat for the peer-discovery
+	# UDP broadcast/listen exchange (busybox nc can't set SO_BROADCAST).
+	apks="$apks ethtool iperf3 iputils-arping dialog bash iproute2 socat"
 
 	# Bake in the menu/daemon scripts and boot-time init.
 	apkovl="genapkovl-linktest.sh"

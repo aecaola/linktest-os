@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stop the linktest-os state machine daemon. Its own EXIT trap tears down
+# the peer-discovery beacon/listener and the ip-monitor supervisor; see
+# src/statemachine.sh main().
+set -e
+
+PIDFILE=/run/linktest/statemachine.pid
+
+start-stop-daemon --stop --quiet --pidfile "$PIDFILE" \
+	--retry TERM/5/KILL/5 || true
+rm -f "$PIDFILE"

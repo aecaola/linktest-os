@@ -1,0 +1,37 @@
+#!/bin/sh
+# Start the linktest-os state machine daemon in the background.
+#
+# It owns state transitions (src/statemachine.sh, deployed here as
+# /usr/local/bin/statemachine.sh) and is what linktest-menu and
+# linktest-testrunner read/drive via /run/linktest/*. Backgrounded for the
+# same reason as 20-ipv4ll.start: a local.d script that never returns
+# blocks the rest of boot -- see that file's header comment for the detail
+# (OpenRC's local service runs each *.start script and waits for it).
+#
+# Numbered to start after 20-ipv4ll.start: the state machine only *polls*
+# for the address ipv4ll claims (never blocks on it), so strict ordering
+# isn't required for correctness, but starting IPv4LL first is the more
+# sensible boot order.
+#
+# linktest-menu is NOT started here. It runs on the console via
+# /etc/inittab's `respawn` mechanism instead of local.d -- a local.d script
+# that blocks in the foreground (which the menu does, until "Quit") would
+# hang OpenRC's `local` service forever, which blocks busybox init's
+# `::wait:/sbin/rc default` in /etc/inittab, which in turn blocks *every*
+# `respawn` getty entry below it from ever being set up -- not just tty1.
+# See overlay/etc/inittab.
+set -e
+
+IFACE="${LINKTEST_IFACE:-eth0}"
+PIDFILE=/run/linktest/statemachine.pid
+
+mkdir -p /run/linktest
+
+# Idempotent: do nothing if it's already up.
+if start-stop-daemon --status --pidfile "$PIDFILE" 2>/dev/null; then
+	exit 0
+fi
+
+LINKTEST_IFACE="$IFACE" start-stop-daemon --start --background \
+	--make-pidfile --pidfile "$PIDFILE" \
+	--exec /usr/local/bin/statemachine.sh

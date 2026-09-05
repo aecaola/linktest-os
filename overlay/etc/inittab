@@ -1,0 +1,23 @@
+::sysinit:/sbin/rc sysinit
+::wait:/sbin/rc default
+
+# tty1 is the operator console: linktest-menu runs here directly, respawned
+# by init on any exit (including "Quit", which execs a shell instead of
+# returning -- see overlay/usr/local/bin/linktest-menu's drop_to_shell).
+# No login prompt, no manual command needed. tty2-tty6 are left as normal
+# gettys so a shell is still reachable (Alt+F2, etc.) for debugging.
+tty1::respawn:/usr/local/bin/linktest-menu
+tty2::respawn:/sbin/getty 38400 tty2
+tty3::respawn:/sbin/getty 38400 tty3
+tty4::respawn:/sbin/getty 38400 tty4
+tty5::respawn:/sbin/getty 38400 tty5
+tty6::respawn:/sbin/getty 38400 tty6
+
+# Put a getty on the serial port
+#ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
+
+# Stuff to do for the 3-finger salute
+::ctrlaltdel:/sbin/reboot
+
+# Stuff to do before rebooting
+::shutdown:/sbin/rc shutdown
