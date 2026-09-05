@@ -1,0 +1,276 @@
+#!/bin/bash
+# linktest-os :: iperf3 test runner
+#
+# The thing the (not-yet-built) menu shells out to. Two subcommands:
+#
+#   server   Waits for the state machine to reach READY, then launches
+#            `iperf3 -s -D` persistently (idempotent -- a no-op if one is
+#            already running). Both machines run this unconditionally, since
+#            either operator can initiate a test from either end and there's
+#            no persistent client/server role (docs/DESIGN.md "Server/client
+#            role"). It does not supervise/restart iperf3 afterwards -- it
+#            waits, launches, and exits; `-D` daemonizes iperf3 itself.
+#
+#   client   Runs one sustained throughput test against the discovered peer
+#            (or an explicit -p HOST for testing against a non-participating
+#            device, per DESIGN.md's advanced-menu mention). The connection
+#            is wrapped in a hard timeout separate from the test duration
+#            (README "Timeouts"): a hung TCP handshake on a flaky-but-up
+#            link fails fast instead of blocking forever, while a live test
+#            still gets its full requested duration. Snapshots linkstat.sh
+#            immediately before and after the iperf3 run and reports the RX
+#            error/dropped/CRC delta alongside the throughput result
+#            (docs/DESIGN.md "Link quality vs. link up").
+#
+# client also drives the state machine's READY<->TESTING control file
+# (src/statemachine.sh) so its state is visible to the menu and so a cable
+# pull mid-test gets the client killed by on_carrier_down -- but the
+# before/after snapshots used in the printed result are this script's own,
+# taken immediately around the iperf3 call, not the daemon's tick-latency-
+# bounded ones (the daemon still takes its own pair and writes
+# TEST_RESULT_FILE as a side effect; that's a redundant, looser-bracketed
+# copy, not depended on here). If no state machine is running at all,
+# client warns and proceeds rather than refusing outright, so this script
+# stays usable standalone.
+#
+# -f on either subcommand is the "advanced: force server-only / client-only"
+# override docs/DESIGN.md mentions, for testing against a device that isn't
+# running linktest-os at all -- normal gating requires the state machine to
+# reach READY, which needs mutual peer discovery to succeed, which never
+# happens against a non-participating device. -f skips that wait/check;
+# everything else (control file, before/after snapshots, hard timeout)
+# still runs the same way.
+#
+# Usage:
+#   linktest-testrunner server [-f]
+#   linktest-testrunner client [-t SECONDS] [-p HOST] [-f]
+
+set -euo pipefail
+
+IFACE="${LINKTEST_IFACE:-eth0}"
+RUN_DIR="${LINKTEST_RUN_DIR:-/run/linktest}"
+STATE_FILE="$RUN_DIR/state"
+LOG_FILE="$RUN_DIR/session.log"
+PEER_FILE="$RUN_DIR/peer"
+CONTROL_FILE="$RUN_DIR/control"
+
+DEFAULT_DURATION="${LINKTEST_TEST_DURATION:-10}"
+CONNECT_MARGIN="${LINKTEST_CONNECT_MARGIN:-5}"
+CONTROL_ACK_TIMEOUT="${LINKTEST_CONTROL_ACK_TIMEOUT:-5}"
+
+# linkstat.sh is expected to sit next to this script (same convention as
+# src/statemachine.sh's LINKSTAT_BIN resolution).
+# shellcheck disable=SC1007  # `CDPATH=` here clears it for the `cd`, not an assignment typo
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+LINKSTAT_BIN="${LINKTEST_LINKSTAT_BIN:-$SCRIPT_DIR/linkstat.sh}"
+
+log() {
+	echo "$(date -Iseconds) testrunner: $*" >> "$LOG_FILE"
+}
+
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") server [-f]
+       $(basename "$0") client [-t SECONDS] [-p HOST] [-f]
+
+  server        wait for READY, then launch a persistent iperf3 -s -D
+  client        run one throughput test against the discovered peer
+    -t SECONDS  test duration (default: ${DEFAULT_DURATION}, or \$LINKTEST_TEST_DURATION)
+    -p HOST     test against HOST instead of the discovered peer
+    -f          force: don't wait for / require READY (testing against a
+                device that isn't running linktest-os)
+EOF
+}
+
+# Empty if the state machine has never run (no state file at all) --
+# distinct from an explicit state -- so client can tell "not running" from
+# "running and not ready" and only hard-refuse on the latter.
+current_state() {
+	[ -f "$STATE_FILE" ] && cat "$STATE_FILE" 2>/dev/null
+	return 0
+}
+
+wait_for_state() {
+	local want="$1" timeout_s="$2" waited=0
+	while [ "$waited" -lt "$timeout_s" ]; do
+		[ "$(current_state)" = "$want" ] && return 0
+		sleep 1
+		waited=$((waited + 1))
+	done
+	[ "$(current_state)" = "$want" ]
+}
+
+# Extract KEY's value from a linkstat.sh (or similar KEY=value) blob passed
+# as $1. sed's own exit status doesn't depend on whether the pattern
+# matched, and head always exits 0, so this is safe under `pipefail` even
+# when KEY is absent -- no `|| true` needed (verified; see the comment on
+# current_ll_addr in src/statemachine.sh for the pattern that DOES need it).
+field_of() {
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n1
+}
+
+snapshot_link() {
+	"$LINKSTAT_BIN" "$IFACE" 2>>"$LOG_FILE"
+}
+
+cmd_server() {
+	mkdir -p "$RUN_DIR"
+	local force=0 opt
+	local OPTIND
+	while getopts "f" opt; do
+		case "$opt" in
+			f) force=1 ;;
+			*) usage; exit 2 ;;
+		esac
+	done
+
+	if [ "$force" = 1 ]; then
+		log "server: -f given, not waiting for READY"
+	else
+		log "server: waiting for state machine to reach READY"
+		while true; do
+			case "$(current_state)" in
+				READY|TESTING) break ;;
+			esac
+			sleep 1
+		done
+	fi
+
+	if pgrep -f 'iperf3 -s' >/dev/null 2>&1; then
+		log "server: iperf3 -s already running"
+		exit 0
+	fi
+
+	log "server: starting iperf3 -s -D"
+	if ! iperf3 -s -D >>"$LOG_FILE" 2>&1; then
+		log "server: FATAL: iperf3 -s -D failed to start"
+		exit 1
+	fi
+	log "server: iperf3 -s -D started"
+}
+
+# Print the combined result: throughput (parsed from iperf3's own
+# human-readable summary -- the "receiver" line, i.e. what actually
+# arrived, which is the number that matters for a link tester) plus the RX
+# error/dropped/CRC delta bracketing the run.
+print_result() {
+	local iperf_rc="$1" iperf_out="$2" before="$3" after="$4"
+
+	local b_err b_drop b_crc a_err a_drop a_crc
+	b_err="$(field_of "$before" RX_ERRORS)"
+	b_drop="$(field_of "$before" RX_DROPPED)"
+	b_crc="$(field_of "$before" RX_CRC_ERRORS)"
+	a_err="$(field_of "$after" RX_ERRORS)"
+	a_drop="$(field_of "$after" RX_DROPPED)"
+	a_crc="$(field_of "$after" RX_CRC_ERRORS)"
+	local d_err=$(( ${a_err:-0} - ${b_err:-0} ))
+	local d_drop=$(( ${a_drop:-0} - ${b_drop:-0} ))
+	local d_crc=$(( ${a_crc:-0} - ${b_crc:-0} ))
+
+	local receiver_line throughput
+	receiver_line="$(printf '%s\n' "$iperf_out" | grep 'receiver$' | tail -n1 || true)"
+	throughput="$(printf '%s\n' "$receiver_line" | grep -oE '[0-9.]+ ?[MGK]?bits/sec' | tail -n1 || true)"
+
+	echo "=== linktest-os test result ==="
+	if [ "$iperf_rc" -eq 124 ]; then
+		echo "Result: FAILED -- connection timed out (link up but not passing traffic?)"
+	elif [ "$iperf_rc" -ne 0 ]; then
+		echo "Result: FAILED -- iperf3 exited with status $iperf_rc"
+	else
+		echo "Result: OK"
+		echo "Throughput (received): ${throughput:-unknown}"
+	fi
+	echo "RX errors during test:     ${d_err}"
+	echo "RX dropped during test:    ${d_drop}"
+	echo "RX CRC errors during test: ${d_crc:-n/a}"
+	if [ "$d_err" -gt 0 ] || [ "$d_drop" -gt 0 ]; then
+		echo "WARNING: RX errors/drops increased during the test -- possible bad cable or connection."
+	fi
+
+	log "result: rc=$iperf_rc throughput=[${throughput:-unknown}] rx_err_delta=$d_err rx_dropped_delta=$d_drop rx_crc_delta=${d_crc:-n/a}"
+}
+
+cmd_client() {
+	local duration="$DEFAULT_DURATION" peer_override="" force=0
+	local OPTIND opt
+	while getopts "t:p:f" opt; do
+		case "$opt" in
+			t) duration="$OPTARG" ;;
+			p) peer_override="$OPTARG" ;;
+			f) force=1 ;;
+			*) usage; exit 2 ;;
+		esac
+	done
+
+	case "$duration" in
+		''|*[!0-9]*)
+			echo "client: -t must be a positive integer, got '$duration'" >&2
+			exit 2
+			;;
+	esac
+	mkdir -p "$RUN_DIR"
+
+	local state
+	state="$(current_state)"
+	if [ -z "$state" ]; then
+		log "client: no state file at $STATE_FILE (state machine not running?); proceeding anyway"
+	elif [ "$state" != "READY" ]; then
+		if [ "$force" = 1 ]; then
+			log "client: state is '$state' (not READY), proceeding anyway (-f given)"
+		else
+			echo "Cannot start test: state machine reports '$state', expected READY" >&2
+			exit 1
+		fi
+	fi
+
+	local peer
+	if [ -n "$peer_override" ]; then
+		peer="$peer_override"
+	else
+		peer="$(cat "$PEER_FILE" 2>/dev/null || true)"
+	fi
+	if [ -z "$peer" ]; then
+		echo "Cannot start test: no peer discovered yet (and no -p HOST given)" >&2
+		exit 1
+	fi
+
+	command -v iperf3 >/dev/null 2>&1 || { echo "client: iperf3 not found" >&2; exit 1; }
+
+	echo "start-test" > "$CONTROL_FILE"
+	if ! wait_for_state "TESTING" "$CONTROL_ACK_TIMEOUT"; then
+		log "client: state machine didn't confirm TESTING within ${CONTROL_ACK_TIMEOUT}s; continuing anyway"
+	fi
+
+	local before after iperf_out iperf_rc hard_timeout
+	before="$(snapshot_link || true)"
+
+	log "client: starting ${duration}s test against $peer (hard timeout ${duration}+${CONNECT_MARGIN}s)"
+	hard_timeout=$((duration + CONNECT_MARGIN))
+	set +e
+	iperf_out="$(timeout "$hard_timeout" iperf3 -c "$peer" -t "$duration" 2>&1)"
+	iperf_rc=$?
+	set -e
+
+	after="$(snapshot_link || true)"
+
+	if [ "$iperf_rc" -ne 0 ]; then
+		echo "test-error" > "$CONTROL_FILE"
+		if [ "$iperf_rc" -eq 124 ]; then
+			log "client: iperf3 timed out after ${hard_timeout}s"
+		else
+			log "client: iperf3 exited $iperf_rc"
+		fi
+	else
+		echo "test-done" > "$CONTROL_FILE"
+	fi
+	wait_for_state "READY" "$CONTROL_ACK_TIMEOUT" || true
+
+	print_result "$iperf_rc" "$iperf_out" "$before" "$after"
+}
+
+case "${1:-}" in
+	server) shift; cmd_server "$@" ;;
+	client) shift; cmd_client "$@" ;;
+	-h|--help) usage ;;
+	*) usage >&2; exit 2 ;;
+esac
