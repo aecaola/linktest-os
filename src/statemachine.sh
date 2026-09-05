@@ -144,12 +144,19 @@ MONITOR_FIFO=""
 MONITOR_PID=""
 
 # Fire a single discovery datagram at the link-local broadcast address.
+# UDP4- (not the protocol-family-agnostic UDP-), deliberately: Alpine's
+# shipped socat (1.8.0.0) fails UDP-DATAGRAM/UDP-RECV's address resolution
+# with "getaddrinfo(\"NULL\", ...): Name has no usable address" -- found by
+# booting two real VMs and watching peer discovery never converge despite
+# everything else (addressing, connectivity) working. UDP4- takes a
+# different, working code path in this socat version, and is arguably more
+# correct anyway since this whole protocol is IPv4-only.
 send_discovery() {
 	local msgtype="$1" our_ip="$2"
 	printf '%s %s %s %s\n' \
 		"$DISCOVERY_MAGIC" "$msgtype" "$our_ip" "$SELF_NONCE" \
 		| socat -u -t0.2 - \
-			"UDP-DATAGRAM:${DISCOVERY_BCAST}:${DISCOVERY_PORT},broadcast" \
+			"UDP4-DATAGRAM:${DISCOVERY_BCAST}:${DISCOVERY_PORT},broadcast" \
 			2>/dev/null || true
 }
 
@@ -168,7 +175,7 @@ discovery_beacon() {
 discovery_listener() {
 	local our_ip="$1"
 	local magic msgtype peer_ip nonce rest
-	socat -u "UDP-RECV:${DISCOVERY_PORT},reuseaddr" - 2>/dev/null \
+	socat -u "UDP4-RECV:${DISCOVERY_PORT},reuseaddr" - 2>/dev/null \
 	| while read -r magic msgtype peer_ip nonce rest; do
 		[ "$magic" = "$DISCOVERY_MAGIC" ] || continue
 		[ "$nonce" = "$SELF_NONCE" ] && continue        # our own broadcast
