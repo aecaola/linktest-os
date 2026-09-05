@@ -1,0 +1,318 @@
+#!/bin/bash
+# linktest-os :: operator menu
+#
+# The dialog-based console UI. Reads /run/linktest/state (and peer,
+# link_flag, ipv4ll.addr) to show what's going on -- it never polls
+# hardware itself for that. The one place it *does* shell out to a
+# hardware reader is the on-demand "Link Stats" screen, which calls
+# linkstat.sh: that's a read-only display refresh the operator asked for,
+# not a competing state-tracking mechanism (docs/DESIGN.md's "menu never
+# polls hardware directly" is about not re-implementing the state
+# machine's own carrier detection, not about banning a stats screen).
+#
+# Screens:
+#   main         state / link summary / peer, auto-refreshing; "Run Test"
+#                only offered while state is READY
+#   Link Stats   full linkstat.sh snapshot, auto-refreshing
+#   Session Log  scrollable view of session.log
+#   Advanced     force server-only / force client-only against a manual IP,
+#                for testing against a device that isn't running
+#                linktest-os (docs/DESIGN.md) -- uses linktest-testrunner's
+#                -f flag, since normal gating requires READY, which mutual
+#                peer discovery will never reach against such a device
+#   Run Test / Force Client both show a results screen: throughput plus
+#   the RX error/dropped/CRC delta, straight from linktest-testrunner's
+#   own output -- this script doesn't recompute any of that itself.
+#
+# Launches `linktest-testrunner server` once in the background on startup
+# so the persistent idle iperf3 -s -D (docs/DESIGN.md "Server/client role")
+# comes up without needing a separate boot-time entry for it.
+
+set -uo pipefail
+# Deliberately not `set -e`: this is an interactive dialog loop. Cancel/ESC
+# on a widget, a grep with no match, etc. are routine, expected outcomes to
+# branch on -- not failures that should ever abort the whole menu.
+
+IFACE="${LINKTEST_IFACE:-eth0}"
+RUN_DIR="${LINKTEST_RUN_DIR:-/run/linktest}"
+STATE_FILE="$RUN_DIR/state"
+LOG_FILE="$RUN_DIR/session.log"
+PEER_FILE="$RUN_DIR/peer"
+LINK_FLAG_FILE="$RUN_DIR/link_flag"
+ADDR_FILE="$RUN_DIR/ipv4ll.addr"
+
+# shellcheck disable=SC1007  # `CDPATH=` here clears it for the `cd`, not an assignment typo
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+LINKSTAT_BIN="${LINKTEST_LINKSTAT_BIN:-$SCRIPT_DIR/linkstat.sh}"
+TESTRUNNER_BIN="${LINKTEST_TESTRUNNER_BIN:-$SCRIPT_DIR/linktest-testrunner}"
+
+REFRESH_SECS="${LINKTEST_MENU_REFRESH:-2}"
+
+# fd 3 is a standing duplicate of the real stdout/terminal. dlg() runs
+# dialog with its stderr (where a menu/inputbox's chosen value is written)
+# swapped onto that real terminal-bound fd1, and its own screen-drawing
+# stdout redirected to fd2 -- so `choice=$(dlg ...)` captures the selection
+# instead of the drawn UI. Widgets we don't need a value back from
+# (msgbox, infobox, yesno) are just called directly.
+exec 3>&1
+dlg() { dialog "$@" 2>&1 1>&3; }
+
+# --- state readers: files only, never a hardware call --------------------
+
+current_state() {
+	[ -f "$STATE_FILE" ] && cat "$STATE_FILE" 2>/dev/null
+	return 0
+}
+
+current_peer() {
+	[ -s "$PEER_FILE" ] && cat "$PEER_FILE" 2>/dev/null
+	return 0
+}
+
+our_address() {
+	[ -s "$ADDR_FILE" ] && cat "$ADDR_FILE" 2>/dev/null
+	return 0
+}
+
+link_flag() {
+	[ -s "$LINK_FLAG_FILE" ] && cat "$LINK_FLAG_FILE" 2>/dev/null
+	return 0
+}
+
+# --- linkstat.sh (on demand, for display only) ----------------------------
+
+# KEY's value from a linkstat.sh blob. Safe under `pipefail` without
+# `|| true`: sed's exit status doesn't depend on whether the pattern
+# matched, and head always exits 0 (see linktest-testrunner's field_of).
+field_of() {
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n1
+}
+
+# One-line "speed/duplex" summary for the main screen's always-visible
+# header -- the full breakdown lives in the dedicated Link Stats screen.
+quick_link_summary() {
+	local snap speed duplex
+	[ -x "$LINKSTAT_BIN" ] || { echo "linkstat.sh unavailable"; return; }
+	snap="$("$LINKSTAT_BIN" "$IFACE" 2>/dev/null)" || { echo "unavailable"; return; }
+	speed="$(field_of "$snap" SPEED_MBPS)"
+	duplex="$(field_of "$snap" DUPLEX)"
+	if [ -n "$speed" ]; then
+		echo "${speed}Mb/s ${duplex}"
+	else
+		echo "no link"
+	fi
+}
+
+format_linkstat() {
+	local snap="$1"
+	local link_detected speed duplex autoneg rx_err rx_drop rx_crc rx_bytes tx_bytes
+	link_detected="$(field_of "$snap" LINK_DETECTED)"
+	speed="$(field_of "$snap" SPEED_MBPS)"
+	duplex="$(field_of "$snap" DUPLEX)"
+	autoneg="$(field_of "$snap" AUTONEG)"
+	rx_err="$(field_of "$snap" RX_ERRORS)"
+	rx_drop="$(field_of "$snap" RX_DROPPED)"
+	rx_crc="$(field_of "$snap" RX_CRC_ERRORS)"
+	rx_bytes="$(field_of "$snap" RX_BYTES)"
+	tx_bytes="$(field_of "$snap" TX_BYTES)"
+
+	cat <<EOF
+Interface:     $IFACE
+Link detected: ${link_detected:-unknown}
+Speed:         ${speed:-unknown} Mb/s
+Duplex:        ${duplex:-unknown}
+Auto-neg:      ${autoneg:-unknown}
+
+RX errors:     ${rx_err:-0}
+RX dropped:    ${rx_drop:-0}
+RX CRC errors: ${rx_crc:-n/a}
+RX bytes:      ${rx_bytes:-0}
+TX bytes:      ${tx_bytes:-0}
+EOF
+}
+
+# --- main screen -----------------------------------------------------------
+
+header_text() {
+	local state peer addr flag link
+	state="$(current_state)"; [ -n "$state" ] || state="(state machine not running)"
+	peer="$(current_peer)"; [ -n "$peer" ] || peer="(not yet discovered)"
+	addr="$(our_address)"; [ -n "$addr" ] || addr="(not yet assigned)"
+	link="$(quick_link_summary)"
+
+	printf 'State: %s\nLink:  %s\nMe:    %s\nPeer:  %s\n' "$state" "$link" "$addr" "$peer"
+	flag="$(link_flag)"
+	[ -n "$flag" ] && printf '\n*** LINK QUALITY WARNING: %s ***\n' "$flag"
+}
+
+confirm_quit() {
+	dialog --yesno "Exit to shell?" 7 40
+}
+
+screen_main() {
+	while true; do
+		local state items choice rc
+		state="$(current_state)"
+
+		items=()
+		[ "$state" = "READY" ] && items+=(1 "Run Test")
+		items+=(2 "Link Stats")
+		items+=(3 "Session Log")
+		items+=(4 "Advanced (force server/client)")
+		items+=(5 "Quit")
+
+		choice="$(dlg --title "linktest-os" --timeout "$REFRESH_SECS" \
+			--menu "$(header_text)" 18 62 6 "${items[@]}")"
+		rc=$?
+
+		[ "$rc" -eq 0 ] || continue   # timeout / ESC / Cancel: just redraw
+		case "$choice" in
+			1) screen_run_test ;;
+			2) screen_link_stats ;;
+			3) screen_session_log ;;
+			4) screen_advanced ;;
+			5) confirm_quit && drop_to_shell ;;
+		esac
+	done
+}
+
+# Replace this process with a shell rather than just returning. This script
+# is launched from /etc/inittab as a `respawn` entry on the console (see
+# overlay/etc/inittab and overlay/etc/local.d/30-linktest.start's header
+# comment): init relaunches a respawn entry the instant it exits, for any
+# reason, so a plain `return`/exit here would make "Quit" show the menu
+# again instantly instead of landing at a shell. `exec` keeps init's
+# bookkeeping pointed at this pid -- no respawn happens until the operator
+# also exits the shell, at which point init respawns the menu fresh.
+drop_to_shell() {
+	clear
+	exec /bin/sh
+}
+
+# --- Run Test ---------------------------------------------------------------
+
+pick_duration() {
+	dlg --menu "Test duration" 12 40 3 \
+		5 "Quick (5s)" \
+		10 "Standard (10s)" \
+		30 "Extended (30s)"
+}
+
+screen_run_test() {
+	local state
+	state="$(current_state)"
+	if [ "$state" != "READY" ]; then
+		dialog --msgbox "Cannot start a test: state is ${state:-unknown}, expected READY." 8 50
+		return
+	fi
+
+	local duration
+	duration="$(pick_duration)"
+	[ -n "$duration" ] || return
+
+	dialog --infobox "Running a ${duration}s test against $(current_peer)...\nThis takes about $((duration + 10))s." 6 60
+	local out
+	out="$("$TESTRUNNER_BIN" client -t "$duration" 2>&1)"
+	dialog --title "Test Result" --msgbox "$out" 18 70
+}
+
+# --- Link Stats --------------------------------------------------------------
+
+screen_link_stats() {
+	while true; do
+		local snap pretty
+		if [ -x "$LINKSTAT_BIN" ]; then
+			snap="$("$LINKSTAT_BIN" "$IFACE" 2>/dev/null)"
+		else
+			snap=""
+		fi
+		if [ -n "$snap" ]; then
+			pretty="$(format_linkstat "$snap")"
+		else
+			pretty="linkstat.sh unavailable at $LINKSTAT_BIN"
+		fi
+		if dialog --title "Link Stats (auto-refresh; OK to return)" \
+			--timeout "$REFRESH_SECS" --msgbox "$pretty" 18 55; then
+			return
+		fi
+	done
+}
+
+# --- Session Log -------------------------------------------------------------
+
+screen_session_log() {
+	if [ -s "$LOG_FILE" ]; then
+		dialog --title "Session Log" --textbox "$LOG_FILE" 22 78
+	else
+		dialog --msgbox "No session log yet ($LOG_FILE)." 8 50
+	fi
+}
+
+# --- Advanced: force server-only / client-only -------------------------------
+
+screen_advanced() {
+	while true; do
+		local choice rc
+		choice="$(dlg --title "Advanced" \
+			--menu "For testing against a device that isn't running linktest-os. Normal state gating (READY) is bypassed." 13 66 3 \
+			1 "Force server-only (start iperf3 -s now)" \
+			2 "Force client-only (test a manual IP)" \
+			3 "Back")"
+		rc=$?
+		[ "$rc" -eq 0 ] || return
+		case "$choice" in
+			1) screen_force_server ;;
+			2) screen_force_client ;;
+			3) return ;;
+		esac
+	done
+}
+
+screen_force_server() {
+	local addr rc
+	addr="$(our_address)"
+	"$TESTRUNNER_BIN" server -f >/dev/null 2>&1
+	rc=$?
+	if [ "$rc" -eq 0 ]; then
+		dialog --title "Force Server" --msgbox "iperf3 server is running.
+
+Your address: ${addr:-unknown}
+Have the other device run:
+  iperf3 -c ${addr:-<your address>}" 12 60
+	else
+		dialog --title "Force Server" --msgbox "Failed to start the iperf3 server (exit $rc). Check the session log." 8 60
+	fi
+}
+
+screen_force_client() {
+	local target duration out
+	target="$(dlg --inputbox "Target IP address:" 10 50 "")"
+	[ -n "$target" ] || return
+
+	duration="$(pick_duration)"
+	[ -n "$duration" ] || return
+
+	dialog --infobox "Running a forced ${duration}s test against $target..." 6 60
+	out="$("$TESTRUNNER_BIN" client -f -t "$duration" -p "$target" 2>&1)"
+	dialog --title "Test Result" --msgbox "$out" 18 70
+}
+
+# --- entry -------------------------------------------------------------------
+
+main() {
+	command -v dialog >/dev/null 2>&1 || { echo "linktest-menu: dialog not found" >&2; exit 1; }
+	mkdir -p "$RUN_DIR"
+
+	# Fire-and-forget: waits for READY on its own, exits once the server is
+	# launched. See linktest-testrunner's server subcommand.
+	"$TESTRUNNER_BIN" server >>"$LOG_FILE" 2>&1 &
+
+	# screen_main never returns: every path either loops back to the menu
+	# or (Quit) execs a shell, replacing this process. See drop_to_shell.
+	screen_main
+}
+
+# Allow this file to be sourced (e.g. by tests) without running the menu.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+	main "$@"
+fi
