@@ -15,6 +15,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # softprops/action-gh-release needs contents:write to create the release;
+    # GITHUB_TOKEN defaults to read-only on this repo, which failed the very
+    # first tag build with "Resource not accessible by integration" -- found
+    # by actually running it, after the ISO itself had already built fine.
+    permissions:
+      contents: write
     container:
       image: alpine:3.20   # pin explicitly — reproducibility matters for a diagnostic tool
     steps:
