@@ -32,6 +32,15 @@ see `docs/COMPATIBILITY.md` for what's actually been tested.
 4. Wait for "Ready" on both screens.
 5. Press **Run Test** on either machine.
 
+## Prerequisites (Windows hosts)
+
+- **Secure Boot**: disable it in BIOS before booting this USB. The ISO isn't
+  signed for Windows' default trust chain (like most diagnostic live USBs).
+  Re-enable after you're done.
+- **BitLocker**: suspend it before touching boot settings, or you'll trigger
+  recovery mode: `manage-bde -protectors -disable C: -RebootCount 0`
+  Re-enable when done: `manage-bde -protectors -enable C:`
+
 ## How addressing works
 
 Both machines self-assign an IPv4LL (169.254.x.x/16, RFC 3927) address on boot — no DHCP,

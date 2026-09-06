@@ -379,20 +379,26 @@ on_carrier_down() {
 }
 
 # Dispatch one line of `ip monitor link` (or the one-shot seed read at
-# startup). Lines for interfaces other than $IFACE, or that don't change UP
-# vs DOWN, are no-ops -- so re-delivering the current state is always safe.
+# startup). Lines for interfaces other than $IFACE, or that don't change the
+# LOWER_UP flag, are no-ops -- so re-delivering the current state is always
+# safe.
+#
+# Carrier is read from the LOWER_UP flag in the <...> flag list, not the
+# "state" (operstate) field. operstate is RFC2863 kernel state, and plenty
+# of real NIC drivers never populate it as up/down -- it just sits at
+# "unknown" forever, while LOWER_UP still correctly toggles with actual
+# carrier. Found by booting two real laptops: the state machine stayed on
+# NO_LINK indefinitely despite carrier being up, while linkstat.sh (which
+# reads carrier via ethtool/sysfs directly, not operstate) reported fine.
 handle_link_line() {
 	local line="$1"
 	printf '%s\n' "$line" | grep -qE "^[0-9]+: ${IFACE}:" || return 0
 
-	case "$line" in
-		*"state UP"*)
-			[ "$(current_state)" = "NO_LINK" ] && begin_link_up
-			;;
-		*"state DOWN"*)
-			[ "$(current_state)" != "NO_LINK" ] && on_carrier_down
-			;;
-	esac
+	if printf '%s\n' "$line" | grep -q 'LOWER_UP'; then
+		[ "$(current_state)" = "NO_LINK" ] && begin_link_up
+	else
+		[ "$(current_state)" != "NO_LINK" ] && on_carrier_down
+	fi
 }
 
 # Advance whatever the current state is waiting on. Called once per tick
